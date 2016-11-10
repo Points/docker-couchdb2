@@ -44,6 +44,9 @@ def start(num_nodes, admin, password):
                 subprocess.check_output('docker rm -f {}'.format(container_id), shell=True)
         except:
             pass  # Ignore exceptions for now.
+
+    master_node = nodes[0]
+
     for node in nodes:
         data_dir_path, node_config_path = make_node_config(node.dir, node.ip, node.name)
         start_cmd = DOCKER_START_NODE.format(cluster_network=DOCKER_NETWORK,
@@ -57,13 +60,13 @@ def start(num_nodes, admin, password):
         print ("Initializing node")
         initial_configuration(node.ip)
         create_admin_user(node.name, node.ip, admin, "admin", password)
-        advanced_configuration(node.name, node.ip, admin, password, "admin")
+        advanced_configuration(node, admin, password)
 
-    master_node_ip = nodes[0].ip
-    enable_cluster(master_node_ip, admin, password)
-    add_nodes_to_cluster(master_node_ip, nodes, admin, password)
+    enable_cluster(master_node.ip, admin, password)
+    set_cluster_size(master_node.ip, num_nodes, master_node, admin, password)
+    add_nodes_to_cluster(master_node.ip, nodes, admin, password)
 
-    response = requests.post(url=COUCHDB_CLUSTER_SETUP['url'].format(user=admin, password=password, ip=master_node_ip),
+    response = requests.post(url=COUCHDB_CLUSTER_SETUP['url'].format(user=admin, password=password, ip=master_node.ip),
                              json={"action": "finish_cluster"})
     print('Cluster setup: complete {}'.format(response.text))
     print('Success')
@@ -117,6 +120,26 @@ def enable_cluster(master_node_ip, admin, password):
         raise RuntimeError('Unable to setup cluster. {}'.format(response.text))
 
 
+def set_cluster_size(ip, size, node, user, password):
+    request_or_raise(
+        url='http://{user}:{password}@{master_node_ip}:5984/_node/{node_name}@{node_ip}/_config/cluster/n'.format(
+            user=user,
+            password=password,
+            master_node_ip=ip,
+            node_name=node.name,
+            node_ip=node.ip),
+        json='1',
+        msg='Cluster setup - set number of copies.')
+    request_or_raise(
+        url='http://{user}:{password}@{master_node_ip}:5984/_node/{node_name}@{node_ip}/_config/cluster/q'.format(
+            user=user,
+            password=password,
+            master_node_ip=ip,
+            node_name=node.name,
+            node_ip=node.ip),
+        json=size,
+        msg='Cluster setup - set number of copies.')
+
 @retry(stop_max_attempt_number=20, wait_fixed=2000)
 def initial_configuration(node_ip):
     request_or_raise(url=BASE_NODE_URL.format(ip=node_ip, db='_users'), msg='Node setup.')
@@ -132,11 +155,21 @@ def create_admin_user(name, node_ip, admin, user, password):
 
 
 @retry(stop_max_attempt_number=5, wait_fixed=2000)
-def advanced_configuration(name, node_ip, admin, password, user):
+def advanced_configuration(node, admin, password):
     # Bind to external/ docker container address
-    url = 'http://{}:{}@{}:5984/_node/{}@{}/_config/chttpd/bind_address'.format(admin, password, node_ip,
-                                                                                name, node_ip)
+    url = 'http://{}:{}@{}:5984/_node/{}@{}/_config/chttpd/bind_address'.format(admin, password, node.ip,
+                                                                                node.name, node.ip)
     request_or_raise(url, json='0.0.0.0', msg='Node setup - enable external access.')
+
+    request_or_raise(
+        url='http://{user}:{password}@{master_node_ip}:5984/_node/{node_name}@{node_ip}/_config/couchdb/delayed_commits'.format(
+            user=admin,
+            password=password,
+            master_node_ip=node.ip,
+            node_name=node.name,
+            node_ip=node.ip),
+        json='true',
+        msg='Node setup - set delayed commit.')
 
 
 def request_or_raise(url, json=None, msg=None, method='put'):
